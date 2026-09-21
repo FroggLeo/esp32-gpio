@@ -11,6 +11,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "driver/ledc.h"
 #include <cstdint>
+#include <atomic>
 
 static const char* TAG = "main";
 static constexpr bool debug = false;
@@ -53,7 +54,7 @@ void setup_gpio() {
     gpio_config(&ec11);
 }
 
-int8_t check_ec11(gpio_num_t pin1, gpio_num_t pin2) {
+int8_t ec11_read(gpio_num_t pin1, gpio_num_t pin2) {
     bool curr_pin1 = gpio_get_level(pin1);
     bool curr_pin2 = gpio_get_level(pin2);
     static bool prev_pin1 = curr_pin1; // set current read only on first run
@@ -67,6 +68,19 @@ int8_t check_ec11(gpio_num_t pin1, gpio_num_t pin2) {
     }
     prev_pin1 = curr_pin1;
     return direction;
+}
+
+std::atomic<int32_t> encoder_position = 0;
+void ec11_task(void *arg) {
+    while (true) {
+        int8_t rotation = ec11_read(ec11_pin1, ec11_pin2);
+        if (rotation == 1) {
+            encoder_position++;
+        } else if (rotation == -1) {
+            encoder_position--;
+        }
+        vTaskDelay(1);
+    }
 }
 
 /* unused
@@ -110,7 +124,6 @@ void setup_buzzer() {
     buzzer_channel.gpio_num = buzzer_pin;
     buzzer_channel.speed_mode = LEDC_LOW_SPEED_MODE;
     buzzer_channel.channel = LEDC_CHANNEL_0;
-    buzzer_channel.intr_type = LEDC_INTR_DISABLE;
     buzzer_channel.timer_sel = LEDC_TIMER_0;
     buzzer_channel.duty = 0;
     buzzer_channel.hpoint = 0;
@@ -135,7 +148,25 @@ void delay(int ms) {
 extern "C" void app_main() {
     setup_gpio();
     setup_buzzer();
-
+    uint32_t current_tone = 500;
+    xTaskCreate(ec11_task, "ec11_task", 2048, nullptr, 5, nullptr);
+    int32_t position = encoder_position;
+    int32_t prev_encoder_position = position;
+    while (true) {
+        position = encoder_position;
+        ESP_LOGI(TAG, "position: %ld", position);
+        current_tone += (position - prev_encoder_position)*(50);
+        bool button_pressed = !gpio_get_level(button_big_pin);
+        if (button_pressed) {
+            buzzer_tone(current_tone);
+            ESP_LOGI(TAG, "playing current tone: %d", current_tone);
+        } else {
+            buzzer_stop();
+            ESP_LOGI(TAG, "stopping current tone: %d", current_tone);
+        }
+        prev_encoder_position = position;
+        delay(50);
+    }
     /*while (true) {
         ESP_LOGI(TAG, "Button pressed: %d", !gpio_get_level(button_big_pin));
         int8_t pressed_button = button_stack_read();
